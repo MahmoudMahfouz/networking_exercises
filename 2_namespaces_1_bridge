@@ -1,0 +1,90 @@
+#!/bin/env/shell
+
+echo "start"
+
+set -x
+
+n1="net1"
+n2="net2"
+br="br0"
+veth1="veth1"
+veth2="veth2"
+veth_main="veth_main"
+eth="enp0s3"
+
+ip1_mask="192.168.179.0/24"
+ip1="192.168.179.1/24"
+ip1_br="192.168.179.254"
+ip1_32="192.168.179.1"
+
+ip2_mask="192.168.180.0/24"
+ip2="192.168.180.1/24"
+ip2_br="192.168.180.254"
+ip2_32="192.168.180.1"
+
+main="192.168.178.27"
+main_mask="192.168.178.0/24"
+gw="192.168.178.1"
+lo="127.0.0.1"
+
+ip link delete $br
+ip netns delete $n1
+ip netns delete $n2
+
+ip link delete $veth1-out
+ip link delete $veth2-out
+
+ip route | cut -d' ' -f1 | xargs -I{} ip route delete {}
+
+# ADD BRIDGE
+ip link add $br type bridge
+ip link set $br up
+ip a add $lo dev lo
+
+ip a add $main brd + dev $br
+ip a add $ip1_br brd + dev $br
+ip a add $ip2_br brd + dev $br
+ip link set $eth master $br
+ip a delete $main/24 dev $eth
+
+
+# Add Namespaces and connect them to the bridge
+ip netns add $n1 
+ip netns add $n2 
+
+ip link add $veth1-in type veth peer name $veth1-out
+ip link add $veth2-in type veth peer name $veth2-out
+
+ip link set $veth1-in netns $n1
+ip link set $veth2-in netns $n2
+
+ip link set $veth1-out up
+ip link set $veth2-out up
+
+ip link set $veth1-out master $br
+ip link set $veth2-out master $br
+ip route add $ip1_mask dev $br
+ip route add $ip2_mask dev $br
+ip route add $main_mask dev $br
+ip route add default via $gw dev $br
+
+# Add namespace routes
+ip netns exec $n1 ip link set $veth1-in up
+ip netns exec $n1 ip link set lo up
+ip netns exec $n1 ip a add $ip1 dev $veth1-in
+ip netns exec $n1 ip route add default via $ip1_br dev $veth1-in
+
+
+ip netns exec $n2 ip link set $veth2-in up
+ip netns exec $n2 ip link set lo up
+ip netns exec $n2 ip a add $ip2 dev $veth2-in
+ip netns exec $n2 ip route add default via $ip2_br dev $veth2-in
+
+
+sysctl -w net.ipv4.ip_forward=1 
+
+iptables -t nat -A POSTROUTING -s $ip1_mask -j MASQUERADE
+iptables -t nat -A POSTROUTING -s $ip2_mask -j MASQUERADE
+
+ip netns exec $n1 ping -c 1 8.8.8.8
+ip netns exec $n2 ping -c 1 8.8.8.8
